@@ -1,97 +1,108 @@
-from typing import Iterable, Callable, TypedDict, List, Dict 
+from __future__ import annotations
 
- 
+from typing import Callable, Iterable, List, Dict, TypedDict, TypeVar
 
-class Item(TypedDict): 
+# -----------------------------
+# Типи (іммутабельні за домовленістю)
+# -----------------------------
 
-    price: float 
 
-    qty: int 
+class Item(TypedDict):
+    price: float
+    qty: int
 
- 
 
-class Order(TypedDict, total=False): 
+class Order(TypedDict, total=False):
+    id: int
+    items: List[Item]
+    paid: bool
+    total: float  # з'являється лише у вихідних даних
 
-    id: int 
 
-    items: List[Item] 
+def order_subtotal(order: Order) -> float:
+    return sum(it["price"] * it["qty"] for it in order["items"])
 
-    paid: bool 
 
-    total: float  # з'явиться в результаті 
+def with_total(order: Order, total: float) -> Order:
+    # Повертаємо НОВИЙ словник, не мутуємо вхідні дані.
+    return {**order, "total": total}
 
- 
 
-def order_subtotal(order: Order) -> float: 
+def process_orders_pure(
+    orders: Iterable[Order],
+    *,
+    min_total: float,
+    discount: float,
+    tax_rate: float,
+) -> Dict[str, object]:
+    """
+    Чисте ядро:
+    - без I/O
+    - без глобальних змінних
+    - без мутацій вхідних структур
+    """
+    qualified: List[Order] = []
+    revenue = 0.0
 
-    return sum(it["price"] * it["qty"] for it in order["items"]) 
+    for o in orders:
+        if not o.get("paid", False):
+            continue
+        subtotal = order_subtotal(o)
+        if subtotal < min_total:
+            continue
+        total = subtotal * (1 - discount)
+        total *= 1 + tax_rate
+        new_o = with_total(o, total)
+        qualified.append(new_o)
+        revenue += total
 
- 
+    return {"count": len(qualified), "revenue": revenue, "orders": qualified}
 
-def with_total(order: Order, total: float) -> Order: 
 
-    # повертаємо НОВИЙ словник (вхідний не чіпаємо) 
+# -----------------------------
+# Callable-політики (композиційність)
+# -----------------------------
 
-    return {**order, "total": total} 
+Subtotal = float
+Amount = float
 
- 
+FilterFn = Callable[[Subtotal], bool]
+DiscountFn = Callable[[Subtotal], Amount]
+TaxFn = Callable[[Amount], Amount]
+Processor = Callable[[List[Order]], Dict[str, object]]
 
-def process_orders_pure( 
 
-    orders: Iterable[Order], 
+def make_processor(
+    *,
+    accept: FilterFn,
+    apply_discount: DiscountFn,
+    apply_tax: TaxFn,
+) -> Processor:
+    def process(orders: List[Order]) -> Dict[str, object]:
+        qualified: List[Order] = []
+        revenue = 0.0
+        for o in orders:
+            if not o.get("paid", False):
+                continue
+            subtotal = order_subtotal(o)
+            if not accept(subtotal):
+                continue
+            total = apply_tax(apply_discount(subtotal))
+            qualified.append(with_total(o, total))
+            revenue += total
+        return {"count": len(qualified), "revenue": revenue, "orders": qualified}
 
-    *, 
+    return process
 
-    min_total: float, 
 
-    discount: float, 
+# -----------------------------
+# Маленькі утиліти композиції
+# -----------------------------
 
-    tax_rate: float 
+A = TypeVar("A")
+B = TypeVar("B")
+C = TypeVar("C")
 
-) -> Dict[str, object]: 
 
-    paid = (o for o in orders if o["paid"]) 
-
-    qualified = [] 
-
-    revenue = 0.0 
-
- 
-
-    for o in paid: 
-
-        subtotal = order_subtotal(o) 
-
-        if subtotal < min_total: 
-
-            continue 
-
-        total = subtotal * (1 - discount) 
-
-        total = total * (1 + tax_rate) 
-
-        new_o = with_total(o, total) 
-
-        qualified.append(new_o) 
-
-        revenue += total 
-
- 
-
-    return {"count": len(qualified), "revenue": revenue, "orders": qualified} 
-
-# app.py — оболонка побічних ефектів 
-
-from core import process_orders_pure 
-
- 
-
-def run(orders): 
-
-    result = process_orders_pure(orders, min_total=100, discount=0.1, tax_rate=0.2) 
-
-    for o in result["orders"]: 
-
-        print("Processed:", o["id"], "total:", o["total"]) 
-
-    print("Revenue:", result["revenue"]) 
+def compose(f: Callable[[B], C], g: Callable[[A], B]) -> Callable[[A], C]:
+    return lambda x: f(g(x))
